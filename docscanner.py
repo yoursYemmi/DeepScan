@@ -1,84 +1,110 @@
 import cv2
 import numpy as np
-import utlis
- 
- 
-########################################################################
-webCamFeed = True
-pathImage = "1.jpg"
-cap = cv2.VideoCapture(0)
-cap.set(10,160)
-heightImg = 640
-widthImg  = 480
-########################################################################
- 
-utlis.initializeTrackbars()
-count=0
- 
-while True:
- 
-    if webCamFeed:success, img = cap.read()
-    else:img = cv2.imread(pathImage)
-    img = cv2.resize(img, (widthImg, heightImg)) # RESIZE IMAGE
-    imgBlank = np.zeros((heightImg,widthImg, 3), np.uint8) # CREATE A BLANK IMAGE FOR TESTING DEBUGING IF REQUIRED
-    imgGray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) # CONVERT IMAGE TO GRAY SCALE
-    imgBlur = cv2.GaussianBlur(imgGray, (5, 5), 1) # ADD GAUSSIAN BLUR
-    thres=utlis.valTrackbars() # GET TRACK BAR VALUES FOR THRESHOLDS
-    imgThreshold = cv2.Canny(imgBlur,thres[0],thres[1]) # APPLY CANNY BLUR
-    kernel = np.ones((5, 5))
-    imgDial = cv2.dilate(imgThreshold, kernel, iterations=2) # APPLY DILATION
-    imgThreshold = cv2.erode(imgDial, kernel, iterations=1)  # APPLY EROSION
- 
-    ## FIND ALL COUNTOURS
-    imgContours = img.copy() # COPY IMAGE FOR DISPLAY PURPOSES
-    imgBigContour = img.copy() # COPY IMAGE FOR DISPLAY PURPOSES
-    contours, hierarchy = cv2.findContours(imgThreshold, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE) # FIND ALL CONTOURS
-    cv2.drawContours(imgContours, contours, -1, (0, 255, 0), 10) # DRAW ALL DETECTED CONTOURS
- 
- 
-    # FIND THE BIGGEST COUNTOUR
-    biggest, maxArea = utlis.biggestContour(contours) # FIND THE BIGGEST CONTOUR
-    if biggest.size != 0:
-        biggest=utlis.reorder(biggest)
-        cv2.drawContours(imgBigContour, biggest, -1, (0, 255, 0), 20) # DRAW THE BIGGEST CONTOUR
-        imgBigContour = utlis.drawRectangle(imgBigContour,biggest,2)
-        pts1 = np.float32(biggest) # PREPARE POINTS FOR WARP
-        pts2 = np.float32([[0, 0],[widthImg, 0], [0, heightImg],[widthImg, heightImg]]) # PREPARE POINTS FOR WARP
-        matrix = cv2.getPerspectiveTransform(pts1, pts2)
-        imgWarpColored = cv2.warpPerspective(img, matrix, (widthImg, heightImg))
- 
-        #REMOVE 20 PIXELS FORM EACH SIDE
-        imgWarpColored=imgWarpColored[20:imgWarpColored.shape[0] - 20, 20:imgWarpColored.shape[1] - 20]
-        imgWarpColored = cv2.resize(imgWarpColored,(widthImg,heightImg))
- 
-        # APPLY ADAPTIVE THRESHOLD
-        imgWarpGray = cv2.cvtColor(imgWarpColored,cv2.COLOR_BGR2GRAY)
-        imgAdaptiveThre= cv2.adaptiveThreshold(imgWarpGray, 255, 1, 1, 7, 2)
-        imgAdaptiveThre = cv2.bitwise_not(imgAdaptiveThre)
-        imgAdaptiveThre=cv2.medianBlur(imgAdaptiveThre,3)
- 
-        # Image Array for Display
-        imageArray = ([img,imgGray,imgThreshold,imgContours],
-                      [imgBigContour,imgWarpColored, imgWarpGray,imgAdaptiveThre])
- 
-    else:
-        imageArray = ([img,imgGray,imgThreshold,imgContours],
-                      [imgBlank, imgBlank, imgBlank, imgBlank])
- 
-    # LABELS FOR DISPLAY
-    lables = [["Original","Gray","Threshold","Contours"],
-              ["Biggest Contour","Warp Prespective","Warp Gray","Adaptive Threshold"]]
- 
-    stackedImage = utlis.stackImages(imageArray,0.75,lables)
-    cv2.imshow("Result",stackedImage)
- 
-    # SAVE IMAGE WHEN 's' key is pressed
-    if cv2.waitKey(1) &amp; 0xFF == ord('s'):
-        cv2.imwrite("Scanned/myImage"+str(count)+".jpg",imgWarpColored)
-        cv2.rectangle(stackedImage, ((int(stackedImage.shape[1] / 2) - 230), int(stackedImage.shape[0] / 2) + 50),
-                      (1100, 350), (0, 255, 0), cv2.FILLED)
-        cv2.putText(stackedImage, "Scan Saved", (int(stackedImage.shape[1] / 2) - 200, int(stackedImage.shape[0] / 2)),
-                    cv2.FONT_HERSHEY_DUPLEX, 3, (0, 0, 255), 5, cv2.LINE_AA)
-        cv2.imshow('Result', stackedImage)
-        cv2.waitKey(300)
-        count += 1
+import pytesseract
+import matplotlib.pyplot as plt
+import os
+from docx import Document
+from tkinter import Tk, filedialog
+
+# Function to select an image
+Tk().withdraw()  # Prevents root window from appearing
+img_path = filedialog.askopenfilename(title="Select an image", filetypes=[("Image Files", "*.png;*.jpg;*.jpeg;*.bmp;*.tiff")])
+if not img_path:
+    print("No image selected!")
+    exit()
+
+# Load the image
+img = cv2.imread(img_path)
+img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+# Display the original image
+def plot_image(img, cmap=None):
+    plt.imshow(img, cmap=cmap)
+    plt.xticks([])
+    plt.yticks([])
+    plt.show()
+
+plot_image(img)
+
+# Convert to grayscale
+def get_grayscale(image):
+    return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+gray_img = get_grayscale(img)
+plot_image(gray_img, cmap='gray')
+
+# Apply Gaussian Blur
+def remove_noise(image):
+    return cv2.GaussianBlur(image, (5, 5), 1)
+
+blur_img = remove_noise(gray_img)
+plot_image(blur_img, cmap='gray')
+
+# Apply Canny Edge Detection
+def Edge_detection(image):
+    return cv2.Canny(image, 100, 200)
+
+edged_img = Edge_detection(blur_img)
+plot_image(edged_img, cmap='gray')
+
+# Detecting Contours
+contours, _ = cv2.findContours(edged_img, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+contours = sorted(contours, key=cv2.contourArea, reverse=True)
+
+doc_cnts = None
+for contour in contours:
+    peri = cv2.arcLength(contour, True)
+    approx = cv2.approxPolyDP(contour, 0.05 * peri, True)
+    if len(approx) == 4:
+        doc_cnts = approx
+        break
+
+if doc_cnts is None:
+    print("Document outline not found!")
+    exit()
+
+# Perspective Transform
+def order_points(pts):
+    rect = np.zeros((4, 2), dtype="float32")
+    s = pts.sum(axis=1)
+    rect[0] = pts[np.argmin(s)]
+    rect[2] = pts[np.argmax(s)]
+    diff = np.diff(pts, axis=1)
+    rect[1] = pts[np.argmin(diff)]
+    rect[3] = pts[np.argmax(diff)]
+    return rect
+
+def four_point_transform(image, pts):
+    rect = order_points(pts)
+    (tl, tr, br, bl) = rect
+    widthA = np.linalg.norm(br - bl)
+    widthB = np.linalg.norm(tr - tl)
+    maxWidth = max(int(widthA), int(widthB))
+    heightA = np.linalg.norm(tr - br)
+    heightB = np.linalg.norm(tl - bl)
+    maxHeight = max(int(heightA), int(heightB))
+    dst = np.array([
+        [0, 0],
+        [maxWidth - 1, 0],
+        [maxWidth - 1, maxHeight - 1],
+        [0, maxHeight - 1]
+    ], dtype="float32")
+    M = cv2.getPerspectiveTransform(rect, dst)
+    return cv2.warpPerspective(image, M, (maxWidth, maxHeight))
+
+warped = four_point_transform(img, doc_cnts.reshape(4, 2))
+warped = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+plot_image(warped, cmap='gray')
+
+# OCR using Tesseract
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+out_below = pytesseract.image_to_string(warped)
+print(out_below)
+
+# Save extracted text to a Word file
+image_name = os.path.splitext(os.path.basename(img_path))[0]
+doc_filename = f"{image_name}_scanned.docx"
+doc = Document()
+doc.add_paragraph(out_below)
+doc.save(doc_filename)
+print(f"Text saved to {doc_filename}")
