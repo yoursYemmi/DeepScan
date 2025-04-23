@@ -1,134 +1,118 @@
 import cv2
 import numpy as np
 import pytesseract
-import matplotlib.pyplot as plt
-import tkinter as tk
-from tkinter import filedialog, messagebox
+import streamlit as st
+from streamlit_drawable_canvas import st_canvas
 from docx import Document
 import os
-import tempfile
+from PIL import Image
 
-# Setup Tesseract path if needed
-# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+# Streamlit page setup
+st.set_page_config(layout="wide")
+st.title("🚀 Smart Document Scanner and OCR")
 
+# Custom CSS styling
+st.markdown("""
+    <style>
+        .stApp {
+            background: linear-gradient(135deg, #ff9e2a, #ff4e00);
+            color: white;
+        }
+        .stButton>button {
+            background-color: #ff4e00;
+            color: white;
+            font-weight: bold;
+        }
+        .stTextArea>textarea {
+            background-color: #f7f7f7;
+            color: #333;
+            border: 2px solid #ff4e00;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+# Helper function to display image
 def plot_image(img, title="Image"):
-    plt.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-    plt.title(title)
-    plt.xticks([]); plt.yticks([])
-    plt.show()
+    st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption=title, use_column_width=True)
 
-def get_four_points_from_user(image):
-    points = []
-
-    def click_event(event, x, y, flags, param):
-        if event == cv2.EVENT_LBUTTONDOWN and len(points) < 4:
-            points.append((x, y))
-            cv2.circle(image, (x, y), 5, (0, 255, 0), -1)
-            cv2.imshow("Select 4 corners (TL, TR, BR, BL)", image)
-
-    cv2.imshow("Select 4 corners (TL, TR, BR, BL)", image)
-    cv2.setMouseCallback("Select 4 corners (TL, TR, BR, BL)", click_event)
-
-    while True:
-        key = cv2.waitKey(1) & 0xFF
-        if len(points) == 4 or key == 27:
-            break
-
-    cv2.destroyAllWindows()
-    return np.array(points, dtype="float32")
-
-def order_points(pts):
-    rect = np.zeros((4, 2), dtype="float32")
-    s = pts.sum(axis=1)
-    diff = np.diff(pts, axis=1)
-    rect[0] = pts[np.argmin(s)]  # Top-left
-    rect[2] = pts[np.argmax(s)]  # Bottom-right
-    rect[1] = pts[np.argmin(diff)]  # Top-right
-    rect[3] = pts[np.argmax(diff)]  # Bottom-left
-    return rect
-
-def four_point_transform(image, pts):
-    rect = order_points(pts)
-    (tl, tr, br, bl) = rect
-    widthA = np.linalg.norm(br - bl)
-    widthB = np.linalg.norm(tr - tl)
-    maxWidth = int(max(widthA, widthB))
-
-    heightA = np.linalg.norm(tr - br)
-    heightB = np.linalg.norm(tl - bl)
-    maxHeight = int(max(heightA, heightB))
-
-    dst = np.array([
-        [0, 0],
-        [maxWidth-1, 0],
-        [maxWidth-1, maxHeight-1],
-        [0, maxHeight-1]
-    ], dtype="float32")
-
-    M = cv2.getPerspectiveTransform(rect, dst)
-    warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
-    return warped
-
-def preprocess_image(img):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    resized = cv2.resize(gray, (2667, 1500), interpolation=cv2.INTER_LINEAR)
-    return resized
-
+# OCR pre-processing and extraction
 def extract_text(image):
-    return pytesseract.image_to_string(image)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    denoised = cv2.fastNlMeansDenoising(gray, None, 30, 7, 21)
+    thresh = cv2.adaptiveThreshold(denoised, 255,
+                                   cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                   cv2.THRESH_BINARY, 11, 2)
+    
+    # Upscale if needed
+    if thresh.shape[1] < 1000:
+        thresh = cv2.resize(thresh, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
 
-# --- GUI File Selection ---
-root = tk.Tk()
-root.withdraw()
-file_path = filedialog.askopenfilename(title="Select an image", filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp *.tiff")])
-if not file_path:
-    print("No file selected.")
-    exit()
+    # Optional: show the image being passed to Tesseract
+    st.subheader("🧪 Preprocessed Image for OCR")
+    plot_image(cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR))
 
-# --- Handle format conversion ---
-temp_png_path = None
-img = cv2.imread(file_path)
-if not file_path.lower().endswith('.png'):
-    temp_png_path = os.path.join(tempfile.gettempdir(), "temp_converted.png")
-    cv2.imwrite(temp_png_path, img)
-    file_path = temp_png_path
-    img = cv2.imread(file_path)
+    return pytesseract.image_to_string(thresh, config="--oem 1 --psm 6")
 
-# --- Show original image ---
-plot_image(img, "Original Image")
+# Upload image
+uploaded_file = st.file_uploader("📤 Upload your image here!", type=["png", "jpg", "jpeg", "bmp", "tiff"])
 
-# --- Resize for OCR and User Selection ---
-resized_img = cv2.resize(img, (2667, 1500), interpolation=cv2.INTER_LINEAR)
+if uploaded_file is not None:
+    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+    image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
 
-# --- Let user select contour points ---
-points = get_four_points_from_user(resized_img.copy())
-if len(points) != 4:
-    print("Not enough points selected. Exiting.")
-    exit()
+    orig_h, orig_w = image.shape[:2]
+    display_w = 800
+    scale_factor = display_w / orig_w
+    display_h = int(orig_h * scale_factor)
+    resized_image = cv2.resize(image, (display_w, display_h))
 
-# --- Transform and show scanned image ---
-scanned = four_point_transform(resized_img, points)
-plot_image(scanned, "Scanned Image")
+    st.subheader("🎨 Draw a rectangle to select the portion of the document you want to scan!")
+    canvas_result = st_canvas(
+        fill_color="rgba(255, 255, 255, 0.3)",
+        stroke_width=3,
+        background_image=Image.fromarray(cv2.cvtColor(resized_image, cv2.COLOR_BGR2RGB)),
+        update_streamlit=True,
+        height=display_h,
+        width=display_w,
+        drawing_mode="rect",
+        key="canvas"
+    )
 
-# --- Preprocess scanned image ---
-processed = preprocess_image(scanned)
+    if canvas_result.json_data and "objects" in canvas_result.json_data:
+        rect_data = canvas_result.json_data["objects"]
+        if len(rect_data) > 0:
+            rect = rect_data[0]
+            if "left" in rect and "top" in rect and "width" in rect and "height" in rect:
+                # Convert coordinates back to original image scale
+                left = int(rect["left"] / scale_factor)
+                top = int(rect["top"] / scale_factor)
+                width = int(rect["width"] / scale_factor)
+                height = int(rect["height"] / scale_factor)
 
-# --- OCR ---
-text = extract_text(processed)
-print("Extracted Text:\n", text)
+                # Crop region from original image
+                cropped_image = image[top:top+height, left:left+width]
 
+                st.subheader("📄 Cropped Image")
+                plot_image(cropped_image)
 
+                scanned = cropped_image  # Skip unnecessary warping
 
-# --- Save Word Document (if approved) ---
-should_save = messagebox.askyesno("Save Document", "Do you want to save the scanned content as a Word document?")
-if should_save:
-    image_name = os.path.splitext(os.path.basename(file_path))[0]
-    doc = Document()
-    doc.add_heading(f'Scanned Document: {image_name}', 0)
-    doc.add_paragraph(text)
-    output_path = f"{image_name}_scanned.docx"  # <-- Updated line
-    doc.save(output_path)
-    print(f"Document saved as: {output_path}")
-else:
-    print("Document not saved.")
+                st.subheader("🖼️ Scanned Image")
+                plot_image(scanned)
 
+                # Extract text
+                st.subheader("🔍 Extracted Text")
+                text = extract_text(scanned)
+                st.text_area("Extracted Text", text, height=200)
+
+                # Save as Word
+                if st.button("💾 Save as Word Document"):
+                    image_name = os.path.splitext(os.path.basename(uploaded_file.name))[0]
+                    doc = Document()
+                    doc.add_heading(f'Scanned Document: {image_name}', 0)
+                    doc.add_paragraph(text)
+                    output_path = f"{image_name}_scanned.docx"
+                    doc.save(output_path)
+                    st.success(f"✅ Document saved as: {output_path}")
+            else:
+                st.warning("⚠️ Please draw a rectangle to select the region.")
